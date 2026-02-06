@@ -17,6 +17,7 @@ Thanks for your interest in improving Zotero MCP. The project is early-stage, so
 - Keep user data and attachment contents out of logs.
 - `uv` is the preferred local dev workflow.
 - Use the env vars in `README.md` (`ZOTERO_API_KEY`, `ZOTERO_USER_ID`, optional retry/cache/logging knobs).
+- For local testing, create a Zotero API key with least-privilege permissions (see README "API Key Permissions").
 
 ## Testing
 

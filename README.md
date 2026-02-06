@@ -557,6 +557,7 @@ All endpoints are Zotero Web API v3 and use `https://api.zotero.org` with `Zoter
 - No API keys are written to disk.
 - Logs must avoid sensitive data (tokens, attachment contents).
 - Minimal permission scope: personal library only.
+- API keys should be created with the least permissions needed for these tools (see "API Key Permissions" below).
 
 ## Error Mapping
 
@@ -611,6 +612,17 @@ This server reads credentials from environment variables only. `.env` files are 
 Required:
 - `ZOTERO_API_KEY`: Zotero API key for personal library access.
 - `ZOTERO_USER_ID`: Zotero user ID associated with the API key.
+
+### API Key Permissions
+
+Create a Zotero API key in your Zotero account settings and grant only the permissions needed for this server:
+
+- Personal library access: **Allow library access** (required for all read operations).
+- Write access: **Allow write access** (required for `zotero_create_item`, `zotero_upload_attachment`, `zotero_attach_arxiv_pdf`, and `zotero_add_item_to_collection`).
+- Notes access: **Allow notes access** is not required.
+- Group access: set **All Groups** to **None** (group libraries are out of scope for v1).
+
+If you want read-only usage, disable write access, but write-enabled tools will return auth errors.
 
 ## Quick Start (Docker)
 
