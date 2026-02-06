@@ -1,0 +1,102 @@
+{
+  "name": "zotero-mcp",
+  "display_name": "Zotero MCP",
+  "version": "0.1.0",
+  "description": "Local, containerized MCP server for the Zotero API.",
+  "long_description_file": "registry/description.md",
+  "license": "MIT",
+  "repository": "https://github.com/zotero-mcp/zotero-mcp",
+  "homepage": "https://github.com/zotero-mcp/zotero-mcp",
+  "image": "ghcr.io/your-org/zotero-mcp:0.1.0",
+  "entrypoint": ["/app/docker-entrypoint.sh"],
+  "mcp": {
+    "transport": "stdio",
+    "tools": [
+      {
+        "name": "zotero_search_items",
+        "summary": "Search and list items in the personal Zotero library."
+      },
+      {
+        "name": "zotero_get_item",
+        "summary": "Fetch metadata for a single item in the personal Zotero library."
+      },
+      {
+        "name": "zotero_create_item",
+        "summary": "Create a new item in the personal Zotero library."
+      },
+      {
+        "name": "zotero_upload_attachment",
+        "summary": "Upload a PDF attachment and link it to an existing item."
+      }
+    ]
+  },
+  "env": [
+    {
+      "name": "ZOTERO_API_KEY",
+      "required": true,
+      "description": "Zotero API key for personal library access."
+    },
+    {
+      "name": "ZOTERO_USER_ID",
+      "required": true,
+      "description": "Zotero user ID associated with the API key."
+    },
+    {
+      "name": "ZOTERO_API_BASE",
+      "required": false,
+      "description": "Override base URL for testing."
+    },
+    {
+      "name": "ZOTERO_MCP_DEBUG",
+      "required": false,
+      "description": "Set to 1 to include a startup log event."
+    },
+    {
+      "name": "ZOTERO_MCP_LOG_LEVEL",
+      "required": false,
+      "description": "Log level for JSON logs (default INFO)."
+    },
+    {
+      "name": "ZOTERO_RETRY_MAX_ATTEMPTS",
+      "required": false,
+      "description": "Retry attempts for 429/5xx/network errors (default 3)."
+    },
+    {
+      "name": "ZOTERO_RETRY_BASE_DELAY",
+      "required": false,
+      "description": "Base backoff delay in seconds (default 0.5)."
+    },
+    {
+      "name": "ZOTERO_RETRY_MAX_DELAY",
+      "required": false,
+      "description": "Max backoff delay in seconds (default 4.0)."
+    },
+    {
+      "name": "ZOTERO_READ_CACHE",
+      "required": false,
+      "description": "Set to 1 to enable in-memory GET caching (default off)."
+    },
+    {
+      "name": "ZOTERO_READ_CACHE_TTL",
+      "required": false,
+      "description": "Cache TTL in seconds (default 30)."
+    },
+    {
+      "name": "ZOTERO_READ_CACHE_MAX",
+      "required": false,
+      "description": "Max cached entries (default 128)."
+    }
+  ],
+  "tags": [
+    "zotero",
+    "references",
+    "bibliography",
+    "library",
+    "research",
+    "mcp"
+  ],
+  "categories": [
+    "research",
+    "productivity"
+  ]
+}

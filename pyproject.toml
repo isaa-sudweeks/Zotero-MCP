@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zotero-mcp"
+version = "0.1.0"
+description = "Local, containerized MCP server for the Zotero API."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Zotero MCP Maintainers" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "mcp[cli]>=1.26.0,<2",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/zotero-mcp/zotero-mcp"
+Repository = "https://github.com/zotero-mcp/zotero-mcp"
+
+[project.scripts]
+zotero-mcp = "zotero_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zotero_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
