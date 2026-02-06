@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -5,6 +6,7 @@ import tempfile
 import unittest
 from typing import Any, Dict, Tuple
 from unittest.mock import patch
+import urllib.error
 import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -50,6 +52,8 @@ class RequestRouter:
             if not response:
                 raise AssertionError(f"No remaining mocked responses for {method} {request.full_url}")
             return response.pop(0)
+        if isinstance(response, Exception):
+            raise response
         return response
 
 
@@ -99,6 +103,40 @@ class IntegrationMockedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["items"][0]["item_key"], "A1")
         self.assertEqual(data["items"][0]["title"], "Deep Learning")
         self.assertEqual(data["items"][0]["tags"], ["ml"])
+
+    async def test_search_items_falls_back_on_relevance_validation(self) -> None:
+        api_base = "https://example.test"
+        relevance_url = f"{api_base}/users/12345/items?q=cats&limit=25&sort=relevance"
+        fallback_url = f"{api_base}/users/12345/items?q=cats&limit=25&sort=dateModified"
+        err_body = json.dumps({"message": "Invalid sort"}).encode("utf-8")
+        error = urllib.error.HTTPError(
+            relevance_url,
+            400,
+            "Bad Request",
+            {"Content-Type": "application/json"},
+            io.BytesIO(err_body),
+        )
+        items = [
+            {
+                "key": "A2",
+                "version": 1,
+                "data": {"itemType": "book", "title": "Cats", "creators": []},
+            }
+        ]
+        router = RequestRouter(
+            {
+                ("GET", relevance_url): error,
+                ("GET", fallback_url): FakeResponse(200, {}, items),
+            }
+        )
+        with patch.dict(os.environ, _default_env(api_base)):
+            with patch("urllib.request.urlopen", new=router):
+                response = await call_tool("zotero_search_items", {"query": "cats"})
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["items"][0]["item_key"], "A2")
+        self.assertEqual(data["sort_used"], "dateModified")
 
     async def test_get_item_includes_attachments(self) -> None:
         api_base = "https://example.test"
@@ -213,6 +251,135 @@ class IntegrationMockedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["parent_item_key"], "PARENT1")
         self.assertEqual(data["content_type"], "application/pdf")
         self.assertGreater(data["size"], 0)
+
+    async def test_attach_arxiv_pdf_flow(self) -> None:
+        api_base = "https://example.test"
+        arxiv_url = "https://arxiv.org/pdf/1706.03762.pdf"
+        template_url = f"{api_base}/items/new?itemType=attachment&linkMode=imported_file"
+        create_url = f"{api_base}/users/12345/items"
+        auth_url = f"{api_base}/users/12345/items/ATTACH1/file"
+        upload_url = "https://uploads.example.test/upload"
+
+        template = {"itemType": "attachment"}
+        create_payload = {"successful": {"0": {"key": "ATTACH1", "version": 7}}}
+        auth_payload = {
+            "url": upload_url,
+            "prefix": "--prefix--",
+            "suffix": "--suffix--",
+            "uploadKey": "UPLOADKEY",
+            "contentType": "multipart/form-data; boundary=boundary",
+        }
+        final_payload = {"ok": True}
+
+        router = RequestRouter(
+            {
+                ("GET", arxiv_url): FakeResponse(
+                    200,
+                    {"Content-Type": "application/pdf", "Content-Length": "13"},
+                    b"%PDF-1.4 test",
+                ),
+                ("GET", template_url): FakeResponse(200, {}, template),
+                ("POST", create_url): FakeResponse(200, {}, create_payload),
+                ("POST", auth_url): [
+                    FakeResponse(200, {}, auth_payload),
+                    FakeResponse(200, {}, final_payload),
+                ],
+                ("POST", upload_url): FakeResponse(201, {}, None),
+            }
+        )
+
+        with patch.dict(os.environ, _default_env(api_base)):
+            with patch("urllib.request.urlopen", new=router):
+                response = await call_tool(
+                    "zotero_attach_arxiv_pdf",
+                    {"item_key": "PARENT1", "arxiv_id": "1706.03762"},
+                )
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["attachment_key"], "ATTACH1")
+        self.assertEqual(data["parent_item_key"], "PARENT1")
+        self.assertEqual(data["arxiv_id"], "1706.03762")
+        self.assertEqual(data["pdf_url"], arxiv_url)
+
+    async def test_list_collections(self) -> None:
+        api_base = "https://example.test"
+        collections_url = f"{api_base}/users/12345/collections?limit=2"
+        collections = [
+            {"key": "COL1", "version": 1, "data": {"name": "Reading"}, "meta": {"numItems": 2}},
+            {"key": "COL2", "version": 2, "data": {"name": "Archive"}},
+        ]
+        headers = {"total-results": "2"}
+        router = RequestRouter(
+            {
+                ("GET", collections_url): FakeResponse(200, headers, collections),
+            }
+        )
+        with patch.dict(os.environ, _default_env(api_base)):
+            with patch("urllib.request.urlopen", new=router):
+                response = await call_tool("zotero_list_collections", {"limit": 2})
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["collections"]), 2)
+        self.assertEqual(data["collections"][0]["collection_key"], "COL1")
+        self.assertEqual(data["collections"][0]["name"], "Reading")
+        self.assertEqual(data["collections"][0]["num_items"], 2)
+
+    async def test_add_item_to_collection_by_key(self) -> None:
+        api_base = "https://example.test"
+        add_url = f"{api_base}/users/12345/collections/COL1/items"
+        router = RequestRouter(
+            {
+                ("POST", add_url): FakeResponse(200, {}, {"successful": True}),
+            }
+        )
+        with patch.dict(os.environ, _default_env(api_base)):
+            with patch("urllib.request.urlopen", new=router):
+                response = await call_tool(
+                    "zotero_add_item_to_collection",
+                    {"item_key": "ITEM1", "collection_key": "COL1"},
+                )
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["item_key"], "ITEM1")
+        self.assertEqual(data["collection_key"], "COL1")
+
+    async def test_add_item_to_collection_by_name(self) -> None:
+        api_base = "https://example.test"
+        collections_url = f"{api_base}/users/12345/collections?limit=100"
+        add_url = f"{api_base}/users/12345/collections/COL1/items"
+        collections = [
+            {"key": "COL1", "data": {"name": "Reading"}},
+            {"key": "COL2", "data": {"name": "Archive"}},
+        ]
+        router = RequestRouter(
+            {
+                ("GET", collections_url): FakeResponse(200, {}, collections),
+                ("POST", add_url): FakeResponse(200, {}, {"successful": True}),
+            }
+        )
+        with patch.dict(os.environ, _default_env(api_base)):
+            with patch("urllib.request.urlopen", new=router):
+                response = await call_tool(
+                    "zotero_add_item_to_collection",
+                    {"item_key": "ITEM1", "collection_name": "Reading"},
+                )
+
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertEqual(data["item_key"], "ITEM1")
+        self.assertEqual(data["collection_key"], "COL1")
+
+    async def test_get_sort_values(self) -> None:
+        response = await call_tool("zotero_get_sort_values", {})
+        self.assertTrue(response["ok"])
+        data = response["data"]
+        self.assertIn("relevance", data["values"])
+        self.assertEqual(data["default"], "relevance")
+        self.assertEqual(data["fallback"], "dateModified")
 
 
 if __name__ == "__main__":

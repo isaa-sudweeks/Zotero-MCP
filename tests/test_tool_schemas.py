@@ -19,10 +19,14 @@ def _tool_by_name(name):
 def test_tool_list_names():
     names = {tool.name for tool in server_module._tool_list()}
     assert names == {
+        "zotero_list_collections",
         "zotero_search_items",
+        "zotero_get_sort_values",
         "zotero_get_item",
         "zotero_create_item",
         "zotero_upload_attachment",
+        "zotero_attach_arxiv_pdf",
+        "zotero_add_item_to_collection",
     }
 
 
@@ -56,6 +60,15 @@ def test_get_item_schema_details():
     assert schema["properties"]["item_key"]["minLength"] == 1
 
 
+def test_list_collections_schema_details():
+    tool = _tool_by_name("zotero_list_collections")
+    schema = tool.inputSchema
+    assert schema["properties"]["limit"]["minimum"] == 1
+    assert schema["properties"]["limit"]["maximum"] == 100
+    assert schema["properties"]["start"]["minimum"] == 0
+    assert schema["properties"]["start"]["default"] == 0
+
+
 def test_create_item_schema_details():
     tool = _tool_by_name("zotero_create_item")
     schema = tool.inputSchema
@@ -71,5 +84,27 @@ def test_upload_attachment_schema_details():
     tool = _tool_by_name("zotero_upload_attachment")
     schema = tool.inputSchema
     assert "item_key" in schema["required"]
-    assert "file_path" in schema["required"]
+    assert "file_path" not in schema["required"]
+    any_of = schema.get("anyOf", [])
+    required_sets = {tuple(sorted(entry.get("required", []))) for entry in any_of}
+    assert tuple(sorted(["item_key", "file_path"])) in required_sets
+    assert tuple(sorted(["item_key", "file_url"])) in required_sets
+    assert tuple(sorted(["item_key", "file_bytes_base64", "filename"])) in required_sets
     assert "default" not in schema["properties"]["content_type"]
+
+
+def test_attach_arxiv_schema_details():
+    tool = _tool_by_name("zotero_attach_arxiv_pdf")
+    schema = tool.inputSchema
+    assert "item_key" in schema["required"]
+    assert "arxiv_id" in schema["required"]
+    assert schema["properties"]["arxiv_id"]["minLength"] == 1
+
+
+def test_add_item_to_collection_schema_details():
+    tool = _tool_by_name("zotero_add_item_to_collection")
+    schema = tool.inputSchema
+    assert "item_key" in schema["required"]
+    assert schema["properties"]["item_key"]["minLength"] == 1
+    assert schema["properties"]["collection_key"]["minLength"] == 1
+    assert schema["properties"]["collection_name"]["minLength"] == 1

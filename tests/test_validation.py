@@ -21,6 +21,12 @@ def test_validate_search_args_strips_and_dedupes():
     assert validated["tags"] == ["ai", "ml"]
 
 
+def test_validate_search_args_normalizes_sort_case():
+    args = {"query": "cats", "sort": "DATEMODIFIED"}
+    validated = server_module._validate_search_args(args)
+    assert validated["sort"] == "dateModified"
+
+
 def test_validate_search_args_defaults():
     validated = server_module._validate_search_args({"query": "cats"})
     assert validated["limit"] == 25
@@ -65,6 +71,30 @@ def test_validate_get_item_args_validates():
 def test_validate_get_item_args_errors(args, message):
     with pytest.raises(ZoteroError) as excinfo:
         server_module._validate_get_item_args(args)
+    assert excinfo.value.code == "ZOTERO_VALIDATION_ERROR"
+    assert excinfo.value.message == message
+
+
+def test_validate_list_collections_args_defaults():
+    validated = server_module._validate_list_collections_args({})
+    assert validated["limit"] == 25
+    assert validated["start"] == 0
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (None, "Arguments must be an object."),
+        ({"limit": "10"}, "limit must be an integer."),
+        ({"limit": 0}, "limit must be between 1 and 100."),
+        ({"limit": 101}, "limit must be between 1 and 100."),
+        ({"start": "0"}, "start must be an integer."),
+        ({"start": -1}, "start must be greater than or equal to 0."),
+    ],
+)
+def test_validate_list_collections_args_errors(args, message):
+    with pytest.raises(ZoteroError) as excinfo:
+        server_module._validate_list_collections_args(args)
     assert excinfo.value.code == "ZOTERO_VALIDATION_ERROR"
     assert excinfo.value.message == message
 
@@ -139,7 +169,7 @@ def test_validate_upload_attachment_args_defaults(tmp_path):
     assert validated["item_key"] == "ABC123"
     assert validated["file_path"] == str(file_path)
     assert validated["title"] is None
-    assert validated["content_type"].startswith("application/")
+    assert validated["content_type"] is None
 
 
 @pytest.mark.parametrize(
@@ -147,7 +177,9 @@ def test_validate_upload_attachment_args_defaults(tmp_path):
     [
         (None, "Arguments must be an object."),
         ({"file_path": "/tmp/file.pdf"}, "item_key is required and must be a non-empty string."),
-        ({"item_key": "ABC", "file_path": ""}, "file_path is required and must be a non-empty string."),
+        ({"item_key": "ABC"}, "Provide exactly one of file_path, file_url, or file_bytes_base64."),
+        ({"item_key": "ABC", "file_path": ""}, "file_path must be a non-empty string when provided."),
+        ({"item_key": "ABC", "file_url": "ftp://example.com/file.pdf"}, "file_url must be http or https."),
         (
             {"item_key": "ABC", "file_path": "FILE_PATH", "title": ""},
             "title must be a non-empty string when provided.",
@@ -155,6 +187,14 @@ def test_validate_upload_attachment_args_defaults(tmp_path):
         (
             {"item_key": "ABC", "file_path": "FILE_PATH", "content_type": 123},
             "content_type must be a string when provided.",
+        ),
+        (
+            {"item_key": "ABC", "file_bytes_base64": "Zm9v"},
+            "filename is required when using file_bytes_base64.",
+        ),
+        (
+            {"item_key": "ABC", "file_bytes_base64": "NOT_BASE64", "filename": "file.pdf"},
+            "file_bytes_base64 must be valid base64.",
         ),
     ],
 )
@@ -187,10 +227,75 @@ def test_validate_upload_attachment_args_size_limit(tmp_path, monkeypatch):
     assert excinfo.value.message == "file_path exceeds upload size limit."
 
 
-def test_validate_upload_attachment_args_infers_content_type_on_blank(tmp_path):
+def test_validate_upload_attachment_args_blank_content_type(tmp_path):
     file_path = tmp_path / "file.pdf"
     file_path.write_bytes(b"%PDF-1.4 test")
     validated = server_module._validate_upload_attachment_args(
         {"item_key": "ABC", "file_path": str(file_path), "content_type": "  "}
     )
-    assert validated["content_type"].startswith("application/")
+    assert validated["content_type"] is None
+
+
+
+
+def test_validate_attach_arxiv_args_validates():
+    validated = server_module._validate_attach_arxiv_args({"item_key": "ABC123", "arxiv_id": "arXiv:1706.03762v1"})
+    assert validated["item_key"] == "ABC123"
+    assert validated["arxiv_id"] == "arXiv:1706.03762v1"
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (None, "Arguments must be an object."),
+        ({}, "item_key is required and must be a non-empty string."),
+        ({"item_key": ""}, "item_key is required and must be a non-empty string."),
+        ({"item_key": "ABC"}, "arxiv_id is required and must be a non-empty string."),
+        ({"item_key": "ABC", "arxiv_id": ""}, "arxiv_id is required and must be a non-empty string."),
+        ({"item_key": "ABC", "arxiv_id": "not-a-real-id"}, "arxiv_id must be a valid arXiv identifier or URL."),
+        ({"item_key": "ABC", "arxiv_id": "1706.03762", "title": ""}, "title must be a non-empty string when provided."),
+    ],
+)
+def test_validate_attach_arxiv_args_errors(args, message):
+    with pytest.raises(ZoteroError) as excinfo:
+        server_module._validate_attach_arxiv_args(args)
+    assert excinfo.value.code == "ZOTERO_VALIDATION_ERROR"
+    assert excinfo.value.message == message
+
+
+def test_validate_add_item_to_collection_args_key_only():
+    validated = server_module._validate_add_item_to_collection_args({"item_key": "ITEM1", "collection_key": "COL1"})
+    assert validated["item_key"] == "ITEM1"
+    assert validated["collection_key"] == "COL1"
+    assert validated["collection_name"] is None
+
+
+def test_validate_add_item_to_collection_args_name_only():
+    validated = server_module._validate_add_item_to_collection_args({"item_key": "ITEM1", "collection_name": "Reads"})
+    assert validated["item_key"] == "ITEM1"
+    assert validated["collection_key"] is None
+    assert validated["collection_name"] == "Reads"
+
+
+@pytest.mark.parametrize(
+    "args,message",
+    [
+        (None, "Arguments must be an object."),
+        ({}, "item_key is required and must be a non-empty string."),
+        ({"item_key": ""}, "item_key is required and must be a non-empty string."),
+        ({"item_key": "ITEM1"}, "Provide collection_key or collection_name."),
+        (
+            {"item_key": "ITEM1", "collection_key": ""},
+            "collection_key must be a non-empty string when provided.",
+        ),
+        (
+            {"item_key": "ITEM1", "collection_name": ""},
+            "collection_name must be a non-empty string when provided.",
+        ),
+    ],
+)
+def test_validate_add_item_to_collection_args_errors(args, message):
+    with pytest.raises(ZoteroError) as excinfo:
+        server_module._validate_add_item_to_collection_args(args)
+    assert excinfo.value.code == "ZOTERO_VALIDATION_ERROR"
+    assert excinfo.value.message == message

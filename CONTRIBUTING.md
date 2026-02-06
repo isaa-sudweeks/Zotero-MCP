@@ -26,6 +26,17 @@ Tests are available. Install dev deps and run:
 uv run --extra test python -m pytest -q
 ```
 
+Notes:
+- Test deps may require network access to build/install (e.g., `hatchling`).
+- Offline installs require a prebuilt lockfile and a warmed cache. See the README "Local Development (uv)" notes for a sample workflow.
+- Some sandboxed environments have hit `TimeoutError` reading `entry_points.txt` when pytest auto-loads plugins. Workaround: disable plugin auto-load for the run:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
+```
+
+- If you still hit the timeout or missing deps, run tests in a fully provisioned host environment.
+
 ## Pull Requests
 
 1. Keep PRs small and focused.

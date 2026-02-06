@@ -8,6 +8,8 @@ import logging
 import mimetypes
 import os
 import random
+import re
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -20,6 +22,20 @@ from .logging_utils import Timer, configure_logging, log_event
 logger = configure_logging()
 
 DEFAULT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+
+_DOI_PREFIXES = (
+    "doi:",
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+)
+_DOI_ID_RE = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", re.IGNORECASE)
+_ARXIV_URL_RE = re.compile(r"(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/(.+)", re.IGNORECASE)
+_ARXIV_URL_FULL_RE = re.compile(r"^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/(.+)$", re.IGNORECASE)
+_ARXIV_ID_RE = re.compile(r"^(?P<core>[a-z\\-]+/\\d{7}|\\d{4}\\.\\d{4,5})(?P<version>v\\d+)?$", re.IGNORECASE)
+_ARXIV_EXTRA_RE = re.compile(r"(?:^|\\s)arxiv(?:\\s*id)?\\s*[:=]\\s*(\\S+)", re.IGNORECASE)
+_DOI_EXTRA_RE = re.compile(r"(?:^|\\s)doi\\s*[:=]\\s*(\\S+)", re.IGNORECASE)
 
 class ZoteroError(RuntimeError):
     def __init__(self, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
@@ -104,6 +120,142 @@ def load_upload_max_bytes() -> int:
     return value if value > 0 else DEFAULT_UPLOAD_MAX_BYTES
 
 
+def normalize_doi(value: str) -> str:
+    raw = value.strip()
+    lowered = raw.lower()
+    for prefix in _DOI_PREFIXES:
+        if lowered.startswith(prefix):
+            return raw[len(prefix) :].strip().lower()
+    return raw.lower()
+
+
+def extract_exact_doi_query(query: str) -> Optional[str]:
+    if not isinstance(query, str):
+        return None
+    raw = query.strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    candidate = raw
+    for prefix in _DOI_PREFIXES:
+        if lowered.startswith(prefix):
+            candidate = raw[len(prefix) :].strip()
+            break
+    if not candidate or any(ch.isspace() for ch in candidate):
+        return None
+    if not _DOI_ID_RE.match(candidate):
+        return None
+    return normalize_doi(candidate)
+
+
+def extract_exact_arxiv_query(query: str) -> Optional[Tuple[str, Optional[str]]]:
+    if not isinstance(query, str):
+        return None
+    raw = query.strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered.startswith("arxiv:"):
+        raw = raw.split(":", 1)[1].strip()
+    match = _ARXIV_URL_FULL_RE.match(raw)
+    if match:
+        raw = match.group(1)
+    if not raw or any(ch.isspace() for ch in raw):
+        return None
+    if raw.lower().endswith(".pdf"):
+        raw = raw[:-4]
+    raw = raw.strip()
+    match = _ARXIV_ID_RE.match(raw)
+    if not match:
+        return None
+    core = match.group("core").lower()
+    version = match.group("version")
+    if version:
+        version = version.lower()
+    return core, version
+
+
+def parse_arxiv_id(value: str) -> Optional[Tuple[str, Optional[str]]]:
+    raw = value.strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered.startswith("arxiv:"):
+        raw = raw.split(":", 1)[1].strip()
+    match = _ARXIV_URL_RE.search(raw)
+    if match:
+        raw = match.group(1)
+    if raw.lower().endswith(".pdf"):
+        raw = raw[:-4]
+    raw = raw.strip()
+    match = _ARXIV_ID_RE.match(raw)
+    if not match:
+        return None
+    core = match.group("core").lower()
+    version = match.group("version")
+    if version:
+        version = version.lower()
+    return core, version
+
+
+def filter_items_exact_match(
+    items: Iterable[Dict[str, Any]],
+    *,
+    doi: Optional[str] = None,
+    arxiv_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    normalized_doi = normalize_doi(doi) if doi else None
+    parsed_arxiv = parse_arxiv_id(arxiv_id) if arxiv_id else None
+    if arxiv_id and not parsed_arxiv:
+        return []
+    output: List[Dict[str, Any]] = []
+    for item in items:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        if normalized_doi:
+            if not _item_matches_doi(data, normalized_doi):
+                continue
+        if parsed_arxiv:
+            if not _item_matches_arxiv(data, parsed_arxiv):
+                continue
+        output.append(item)
+    return output
+
+
+def _item_matches_doi(data: Dict[str, Any], normalized_doi: str) -> bool:
+    doi = data.get("DOI")
+    if isinstance(doi, str) and normalize_doi(doi) == normalized_doi:
+        return True
+    extra = data.get("extra")
+    if isinstance(extra, str):
+        for match in _DOI_EXTRA_RE.finditer(extra):
+            if normalize_doi(match.group(1)) == normalized_doi:
+                return True
+    return False
+
+
+def _item_matches_arxiv(data: Dict[str, Any], parsed: Tuple[str, Optional[str]]) -> bool:
+    target_core, target_version = parsed
+    candidates: List[str] = []
+    archive_id = data.get("archiveID") or data.get("archiveId")
+    if isinstance(archive_id, str) and archive_id.strip():
+        candidates.append(archive_id)
+    extra = data.get("extra")
+    if isinstance(extra, str):
+        candidates.extend(match.group(1) for match in _ARXIV_EXTRA_RE.finditer(extra))
+    for candidate in candidates:
+        parsed_candidate = parse_arxiv_id(candidate)
+        if not parsed_candidate:
+            continue
+        candidate_core, candidate_version = parsed_candidate
+        if candidate_core != target_core:
+            continue
+        if target_version is None:
+            return True
+        if candidate_version == target_version:
+            return True
+    return False
+
+
 def infer_content_type(file_path: str) -> str:
     guess, _ = mimetypes.guess_type(file_path)
     if guess:
@@ -127,6 +279,162 @@ def validate_upload_file(file_path: str) -> os.stat_result:
             {"size": stat.st_size, "max_bytes": max_bytes},
         )
     return stat
+
+
+def _filename_from_content_disposition(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    for part in value.split(";"):
+        part = part.strip()
+        lowered = part.lower()
+        if lowered.startswith("filename*=") or lowered.startswith("filename="):
+            name = part.split("=", 1)[1].strip()
+            if name.lower().startswith("utf-8''"):
+                name = name[7:]
+            name = name.strip("\"'")
+            if name:
+                return name
+    return None
+
+
+def _filename_from_url(file_url: str) -> Optional[str]:
+    parsed = urllib.parse.urlparse(file_url)
+    name = os.path.basename(parsed.path or "")
+    return name or None
+
+
+def _read_response_bytes(response: Any, *, max_bytes: int, source_label: str) -> bytes:
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        try:
+            size = int(content_length)
+        except ValueError:
+            size = None
+        if size is not None and size > max_bytes:
+            raise ZoteroError(
+                "ZOTERO_VALIDATION_ERROR",
+                f"{source_label} exceeds upload size limit.",
+                {"size": size, "max_bytes": max_bytes},
+            )
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ZoteroError(
+                "ZOTERO_VALIDATION_ERROR",
+                f"{source_label} exceeds upload size limit.",
+                {"size": total, "max_bytes": max_bytes},
+            )
+    return b"".join(chunks)
+
+
+def _download_file_bytes(file_url: str) -> Tuple[bytes, Optional[str], Optional[str]]:
+    max_bytes = load_upload_max_bytes()
+    request = urllib.request.Request(url=file_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            file_bytes = _read_response_bytes(response, max_bytes=max_bytes, source_label="file_url")
+            content_type = response.headers.get("Content-Type")
+            filename = _filename_from_content_disposition(response.headers.get("Content-Disposition"))
+            if not filename:
+                filename = _filename_from_url(file_url)
+            return file_bytes, filename, content_type
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        payload = exc.read().decode("utf-8") if exc.fp else ""
+        raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "Download failed.", {"status": status, "body": payload}) from exc
+    except urllib.error.URLError as exc:
+        raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "Download failed.", {"reason": str(exc)}) from exc
+
+
+def _normalize_arxiv_id(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ZoteroError("ZOTERO_VALIDATION_ERROR", "arxiv_id is required and must be a non-empty string.")
+    lowered = raw.lower()
+    if lowered.startswith("arxiv:"):
+        raw = raw.split(":", 1)[1].strip()
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme in ("http", "https"):
+        path = parsed.path or ""
+        if "/abs/" in path:
+            raw = path.split("/abs/", 1)[1]
+        elif "/pdf/" in path:
+            raw = path.split("/pdf/", 1)[1]
+        else:
+            raw = path.lstrip("/")
+        raw = raw.split("?", 1)[0].split("#", 1)[0]
+    raw = raw.strip()
+    if raw.lower().endswith(".pdf"):
+        raw = raw[:-4]
+    if not raw:
+        raise ZoteroError("ZOTERO_VALIDATION_ERROR", "Unable to parse arXiv identifier.")
+    return raw
+
+
+def _build_arxiv_pdf_url(arxiv_id: str) -> str:
+    encoded = urllib.parse.quote(arxiv_id, safe="/")
+    return f"https://arxiv.org/pdf/{encoded}.pdf"
+
+
+def _fetch_arxiv_pdf_to_temp(arxiv_id_or_url: str) -> tuple[str, str, str]:
+    arxiv_id = _normalize_arxiv_id(arxiv_id_or_url)
+    pdf_url = _build_arxiv_pdf_url(arxiv_id)
+    request = urllib.request.Request(pdf_url, headers={"User-Agent": "zotero-mcp"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            if response.status < 200 or response.status >= 300:
+                payload = response.read().decode("utf-8", errors="replace")
+                _raise_for_http_error(response.status, payload, response.headers)
+                raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "arXiv PDF request failed.", {"status": response.status})
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit():
+                max_bytes = load_upload_max_bytes()
+                if int(content_length) > max_bytes:
+                    raise ZoteroError(
+                        "ZOTERO_VALIDATION_ERROR",
+                        "arXiv PDF exceeds upload size limit.",
+                        {"size": int(content_length), "max_bytes": max_bytes},
+                    )
+            content_type = response.headers.get("Content-Type", "")
+            payload_bytes = response.read()
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        payload = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        _raise_for_http_error(status, payload, exc.headers)
+        raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "arXiv PDF request failed.", {"status": status}) from exc
+    except urllib.error.URLError as exc:
+        raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "arXiv PDF request failed.", {"reason": str(exc)}) from exc
+
+    if not payload_bytes:
+        raise ZoteroError("ZOTERO_UPSTREAM_ERROR", "Empty arXiv PDF response.")
+
+    max_bytes = load_upload_max_bytes()
+    if len(payload_bytes) > max_bytes:
+        raise ZoteroError(
+            "ZOTERO_VALIDATION_ERROR",
+            "arXiv PDF exceeds upload size limit.",
+            {"size": len(payload_bytes), "max_bytes": max_bytes},
+        )
+
+    is_pdf_header = payload_bytes.startswith(b"%PDF")
+    if "pdf" not in content_type.lower() and not is_pdf_header:
+        raise ZoteroError(
+            "ZOTERO_UPSTREAM_ERROR",
+            "arXiv response was not a PDF.",
+            {"content_type": content_type},
+        )
+
+    with tempfile.NamedTemporaryFile(prefix="arxiv_", suffix=".pdf", delete=False) as handle:
+        handle.write(payload_bytes)
+        temp_path = handle.name
+
+    return temp_path, arxiv_id, pdf_url
 
 
 _READ_CACHE: Dict[str, Tuple[float, Any, Dict[str, str]]] = {}
@@ -633,6 +941,34 @@ def list_item_children(
     return _request_json(config=config, method="GET", path=path)
 
 
+def list_collections(
+    *,
+    config: ZoteroConfig,
+    limit: int,
+    start: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    params: List[Tuple[str, str]] = [
+        ("limit", str(limit)),
+    ]
+    if start:
+        params.append(("start", str(start)))
+    path = f"/users/{urllib.parse.quote(config.user_id)}/collections"
+    return _request_json(config=config, method="GET", path=path, query=params)
+
+
+def add_item_to_collection(
+    *,
+    config: ZoteroConfig,
+    collection_key: str,
+    item_key: str,
+) -> Tuple[Any, Dict[str, str]]:
+    path = (
+        f"/users/{urllib.parse.quote(config.user_id)}/collections/{urllib.parse.quote(collection_key)}/items"
+    )
+    body = [item_key]
+    return _request_json_any(config=config, method="POST", path=path, body=body)
+
+
 def _coerce_template(template: Any) -> Dict[str, Any]:
     if isinstance(template, dict):
         return dict(template)
@@ -692,18 +1028,52 @@ def upload_attachment(
     *,
     config: ZoteroConfig,
     item_key: str,
-    file_path: str,
+    file_path: Optional[str],
+    file_url: Optional[str],
+    file_bytes: Optional[bytes],
+    filename: Optional[str],
     title: Optional[str],
     content_type: Optional[str],
 ) -> Dict[str, Any]:
-    stat = validate_upload_file(file_path)
-    filename = os.path.basename(file_path)
-    resolved_title = title.strip() if isinstance(title, str) and title.strip() else filename
     resolved_content_type = content_type.strip() if isinstance(content_type, str) and content_type.strip() else None
+    resolved_filename = filename.strip() if isinstance(filename, str) and filename.strip() else None
+    resolved_mtime = time.time()
+    size = 0
+    if file_path:
+        stat = validate_upload_file(file_path)
+        resolved_filename = os.path.basename(file_path)
+        with open(file_path, "rb") as handle:
+            file_bytes = handle.read()
+        size = stat.st_size
+        resolved_mtime = stat.st_mtime
+    elif file_url:
+        downloaded_bytes, inferred_filename, inferred_content_type = _download_file_bytes(file_url)
+        file_bytes = downloaded_bytes
+        if not resolved_filename and inferred_filename:
+            resolved_filename = inferred_filename
+        if resolved_content_type is None and inferred_content_type:
+            resolved_content_type = inferred_content_type.split(";", 1)[0].strip() or None
+        size = len(file_bytes)
+    elif file_bytes is not None:
+        max_bytes = load_upload_max_bytes()
+        if len(file_bytes) > max_bytes:
+            raise ZoteroError(
+                "ZOTERO_VALIDATION_ERROR",
+                "file_bytes exceeds upload size limit.",
+                {"size": len(file_bytes), "max_bytes": max_bytes},
+            )
+        size = len(file_bytes)
+    else:
+        raise ZoteroError(
+            "ZOTERO_VALIDATION_ERROR",
+            "Provide exactly one of file_path, file_url, or file_bytes.",
+        )
+
+    if not resolved_filename:
+        resolved_filename = "attachment"
+    resolved_title = title.strip() if isinstance(title, str) and title.strip() else resolved_filename
     if resolved_content_type is None:
-        resolved_content_type = infer_content_type(file_path)
-    with open(file_path, "rb") as handle:
-        file_bytes = handle.read()
+        resolved_content_type = infer_content_type(resolved_filename)
 
     md5_hash = hashlib.md5(file_bytes).hexdigest()
     template_raw, _ = _request_json_any(
@@ -718,7 +1088,7 @@ def upload_attachment(
             "parentItem": item_key,
             "linkMode": "imported_file",
             "title": resolved_title,
-            "filename": filename,
+            "filename": resolved_filename,
             "contentType": resolved_content_type,
         }
     )
@@ -737,9 +1107,9 @@ def upload_attachment(
         path=f"/users/{urllib.parse.quote(config.user_id)}/items/{urllib.parse.quote(attachment_key)}/file",
         body={
             "md5": md5_hash,
-            "filename": filename,
-            "filesize": stat.st_size,
-            "mtime": int(stat.st_mtime),
+            "filename": resolved_filename,
+            "filesize": size,
+            "mtime": int(resolved_mtime),
         },
     )
     if not isinstance(auth_payload, dict):
@@ -773,6 +1143,42 @@ def upload_attachment(
         "parent_item_key": item_key,
         "title": resolved_title,
         "content_type": resolved_content_type,
-        "size": stat.st_size,
+        "size": size,
         "version": attachment_version,
     }
+
+
+def attach_arxiv_pdf(
+    *,
+    config: ZoteroConfig,
+    item_key: str,
+    arxiv_id: str,
+    title: Optional[str],
+) -> Dict[str, Any]:
+    temp_path, resolved_arxiv_id, pdf_url = _fetch_arxiv_pdf_to_temp(arxiv_id)
+    try:
+        payload = upload_attachment(
+            config=config,
+            item_key=item_key,
+            file_path=temp_path,
+            file_url=None,
+            file_bytes=None,
+            filename=None,
+            title=title,
+            content_type="application/pdf",
+        )
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log_event(
+                logger,
+                level=logging.WARNING,
+                event="arxiv.cleanup_failed",
+                error=str(exc),
+            )
+    payload["arxiv_id"] = resolved_arxiv_id
+    payload["pdf_url"] = pdf_url
+    return payload

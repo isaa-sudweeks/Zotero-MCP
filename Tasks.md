@@ -38,3 +38,16 @@ Upload attachment: `GET /items/new?itemType=attachment&linkMode=imported_file`, 
 - [x] Add security note: do not log auth token or file contents; redact in errors.
 - [x] Document structured logging output and controls.
 - [x] Add basic smoke test / manual test script to verify server boot.
+- [x] Investigate pytest startup failure in sandbox (TimeoutError reading entry_points.txt); documented workaround and environment requirements.
+- [x] Document that dev/test dependencies require network access (pip build deps like `hatchling`) or provide an offline/install-from-lock workflow.
+- [ ] Run unit + integration tests in a clean environment (uv or venv) and record results.
+- [ ] Run smoke test script against live or mocked Zotero API and record outcomes.
+- [ ] Document expected Zotero API permissions/scopes for the API key.
+- [ ] Add LICENSE and reference it in registry metadata.
+- [ ] Add CI workflow to run unit/integration tests when deps are available (or explicitly document no CI for v1).
+- [x] Add collection tooling: list collections and add item to collection by name or key.
+- [x] Add exact-match search helpers for DOI and arXiv ID (avoid false positives).
+- [x] Add helper to fetch and attach arXiv PDF automatically.
+- [x] Add ability to retrieve valid `sort` values and/or set safe defaults when relevance fails.
+- [x] Add attachment by URL or upload-bytes path so file paths are not required.
+- [~] Document a shared temp dir or filesystem bridge between tool server and local workspace. (Obsoleted if attachment by URL or upload-bytes is implemented)

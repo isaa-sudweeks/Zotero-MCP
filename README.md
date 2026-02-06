@@ -1,10 +1,10 @@
 # Zotero MCP
 
-Local MCP server that gives AI agents safe, structured access to the Zotero API (containerization planned).
+Local MCP server that gives AI agents safe, structured access to the Zotero API (Docker packaging included).
 
-This project targets the Docker MCP Catalog submission flow and will be published as a self-provided image once containerization is complete.
+This project targets the Docker MCP Catalog submission flow and will be published as a self-provided image once a published image is available.
 
-**Status**: Core tools implemented (search, get, create, upload). Reliability (retry + read cache) and structured logging are in place. Tests exist but require dependencies; Dockerfile is present and local image validation is pending.
+**Status**: Core tools implemented (search, get, create, upload, collections). Reliability (retry + read cache) and structured logging are in place. Tests exist but require dependencies; Dockerfile is present and local image validation is pending.
 
 **Vision (v1)**: An agent can search your personal Zotero library for a paper. If it’s missing, the agent can upload the paper and its metadata (including a file attachment, typically a PDF) into your library.
 
@@ -18,10 +18,12 @@ This project targets the Docker MCP Catalog submission flow and will be publishe
 
 ## Features (v1)
 
+- List collections in the personal Zotero library. (Implemented)
 - Search and list items in the personal Zotero library. (Implemented)
 - Retrieve item metadata (including attachments). (Implemented)
 - Create new items with metadata. (Implemented)
 - Upload file attachments (typically PDFs) and link them to items. (Implemented)
+- Add an item to a collection by name or key. (Implemented)
 
 ## MCP Tools (v1)
 
@@ -32,6 +34,7 @@ Current tool surface for v1. Tools below reflect the current implementation.
 - `item_key` is the Zotero item key (8-character string).
 - `tags` are strings; duplicates are ignored.
 - `creators` entries use Zotero's basic creator shape: `creator_type`, `first_name`, `last_name`, or `name` for single-field creators.
+- `collection_name` matching is case-insensitive exact-match; ambiguous matches return an error with the candidate keys.
 - Errors are returned as MCP tool errors with codes like `ZOTERO_AUTH_ERROR`, `ZOTERO_NOT_FOUND`, `ZOTERO_RATE_LIMITED`, `ZOTERO_VALIDATION_ERROR`, `ZOTERO_UPSTREAM_ERROR`.
 - Tool results are wrapped in a standard envelope: `{ "ok": true|false, "data": ..., "error": ... }`.
 - Pagination input is supported via `start` (or `offset` as an alias) and `next_start` in responses when Zotero supplies it.
@@ -41,13 +44,24 @@ Current tool surface for v1. Tools below reflect the current implementation.
 - Inputs
 - `query` (string, required): free-text search query.
 - `limit` (int, optional, default 25, min 1, max 100): max items to return.
-- `sort` (string, optional, default `relevance`): sort key, forwarded to Zotero.
+- `sort` (string, optional, default `relevance`): sort key, forwarded to Zotero. If Zotero rejects `relevance`, the server retries with `dateModified` and returns `sort_used`.
 - `start` (int, optional, default 0, min 0): starting offset into the result set.
 - `offset` (int, optional, min 0): alias for `start` (use one or the other).
 - `tags` (string[], optional): filter to items containing all tags.
 - Output
 - `items` (array): list of items with fields `item_key`, `version`, `item_type`, `title`, `creators`, `date`, `doi`, `url`, `abstract`, `tags`, `extra`.
 - `total` (int): total items matched (if available from Zotero).
+- `next_start` (int, optional): pagination cursor if Zotero provides a next page.
+- `sort_used` (string, optional): populated when a fallback sort was applied.
+
+**Tool: `zotero_list_collections`**
+- Purpose: list collections in the personal library.
+- Inputs
+- `limit` (int, optional, default 25, min 1, max 100): max collections to return.
+- `start` (int, optional, default 0, min 0): starting offset into the result set.
+- Output
+- `collections` (array): list of collections with fields `collection_key`, `name`, `parent_key`, `version`, `num_items` (when available).
+- `total` (int): total collections (if available from Zotero).
 - `next_start` (int, optional): pagination cursor if Zotero provides a next page.
 
 **Tool: `zotero_get_item`**
@@ -77,13 +91,46 @@ Current tool surface for v1. Tools below reflect the current implementation.
 - Purpose: attach a file to an existing item.
 - Inputs
 - `item_key` (string, required): parent item key to attach to.
-- `file_path` (string, required): local path to file in the container/runtime (must exist and be readable).
+- `file_path` (string, optional): local path to file in the container/runtime (must exist and be readable).
+- `file_url` (string, optional): http/https URL to fetch and upload.
+- `file_bytes_base64` (string, optional): base64-encoded file bytes to upload.
+- `filename` (string, required when using `file_bytes_base64`): filename to associate with the upload.
 - `title` (string, optional): attachment title (defaults to filename).
 - `content_type` (string, optional): inferred from file extension when omitted (fallback `application/octet-stream`).
+- Provide exactly one of `file_path`, `file_url`, or `file_bytes_base64`.
 - Output
 - `attachment_key` (string): created attachment item key.
 - `version` (int): attachment item version.
 - `parent_item_key`, `title`, `content_type`, `size` are included when available.
+
+**Tool: `zotero_attach_arxiv_pdf`**
+- Purpose: fetch an arXiv PDF and attach it to an existing item.
+- Inputs
+- `item_key` (string, required): parent item key to attach to.
+- `arxiv_id` (string, required): arXiv identifier or arXiv URL (e.g., `1706.03762v1` or `https://arxiv.org/abs/1706.03762`).
+- `title` (string, optional): attachment title (defaults to filename).
+- Output
+- `attachment_key` (string): created attachment item key.
+- `version` (int): attachment item version.
+- `parent_item_key`, `title`, `content_type`, `size`, `arxiv_id`, `pdf_url` are included when available.
+
+**Tool: `zotero_get_sort_values`**
+- Purpose: return known Zotero sort values plus server defaults.
+- Inputs: none.
+- Output
+- `values` (string[]): known sort keys.
+- `default` (string): default sort used by the server.
+- `fallback` (string): fallback sort used when `relevance` is rejected.
+
+**Tool: `zotero_add_item_to_collection`**
+- Purpose: add an item to a collection by collection key or name.
+- Inputs
+- `item_key` (string, required): item key to add.
+- `collection_key` (string, optional): collection key to add to.
+- `collection_name` (string, optional): collection name to resolve (case-insensitive exact match).
+- Output
+- `item_key` (string): item key added.
+- `collection_key` (string): resolved collection key used for the add.
 
 ## MCP Tool Schemas (Request/Response)
 
@@ -194,7 +241,8 @@ Response `data` schema:
       }
     },
     "total": { "type": "integer", "minimum": 0 },
-    "next_start": { "type": "integer", "minimum": 0 }
+    "next_start": { "type": "integer", "minimum": 0 },
+    "sort_used": { "type": "string" }
   },
   "required": ["items", "total"]
 }
@@ -259,6 +307,33 @@ Response `data` schema:
 }
 ```
 
+### `zotero_get_sort_values`
+
+Request schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}
+```
+
+Response `data` schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "values": { "type": "array", "items": { "type": "string" } },
+    "default": { "type": "string" },
+    "fallback": { "type": "string" }
+  },
+  "required": ["values", "default", "fallback"]
+}
+```
+
 ### `zotero_create_item`
 
 Request schema:
@@ -299,7 +374,7 @@ Response `data` schema:
 
 ### `zotero_upload_attachment`
 
-Uploads must reference a local, readable file path within the configured size limit. When `content_type` is omitted, the server infers it from the file extension (fallback `application/octet-stream`).
+Uploads must provide exactly one of `file_path`, `file_url`, or `file_bytes_base64` (with `filename`). Local files must be readable and within the configured size limit. When `content_type` is omitted, the server infers it from the URL response header or filename extension (fallback `application/octet-stream`).
 
 Request schema:
 
@@ -310,10 +385,18 @@ Request schema:
   "properties": {
     "item_key": { "type": "string", "minLength": 1 },
     "file_path": { "type": "string", "minLength": 1 },
+    "file_url": { "type": "string", "minLength": 1 },
+    "file_bytes_base64": { "type": "string", "minLength": 1 },
+    "filename": { "type": "string", "minLength": 1 },
     "title": { "type": "string" },
     "content_type": { "type": "string" }
   },
-  "required": ["item_key", "file_path"]
+  "required": ["item_key"],
+  "anyOf": [
+    { "required": ["item_key", "file_path"] },
+    { "required": ["item_key", "file_url"] },
+    { "required": ["item_key", "file_bytes_base64", "filename"] }
+  ]
 }
 ```
 
@@ -335,12 +418,127 @@ Response `data` schema:
 }
 ```
 
+### `zotero_attach_arxiv_pdf`
+
+Fetches an arXiv PDF by identifier or URL and uploads it as an attachment.
+
+Request schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "item_key": { "type": "string", "minLength": 1 },
+    "arxiv_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string" }
+  },
+  "required": ["item_key", "arxiv_id"]
+}
+```
+
+Response `data` schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "attachment_key": { "type": "string" },
+    "parent_item_key": { "type": "string" },
+    "title": { "type": "string" },
+    "content_type": { "type": "string" },
+    "size": { "type": "integer" },
+    "version": { "type": "integer" },
+    "arxiv_id": { "type": "string" },
+    "pdf_url": { "type": "string" }
+  },
+  "required": ["attachment_key", "parent_item_key", "version", "arxiv_id", "pdf_url"]
+}
+```
+
+### `zotero_list_collections`
+
+Request schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 },
+    "start": { "type": "integer", "minimum": 0, "default": 0 }
+  }
+}
+```
+
+Response `data` schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "collections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "collection_key": { "type": "string" },
+          "name": { "type": "string" },
+          "parent_key": { "type": "string" },
+          "version": { "type": "integer" },
+          "num_items": { "type": "integer" }
+        },
+        "required": ["collection_key", "name", "version"]
+      }
+    },
+    "total": { "type": "integer", "minimum": 0 },
+    "next_start": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["collections", "total"]
+}
+```
+
+### `zotero_add_item_to_collection`
+
+Request schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "item_key": { "type": "string", "minLength": 1 },
+    "collection_key": { "type": "string", "minLength": 1 },
+    "collection_name": { "type": "string", "minLength": 1 }
+  },
+  "required": ["item_key"]
+}
+```
+
+Response `data` schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "item_key": { "type": "string" },
+    "collection_key": { "type": "string" }
+  },
+  "required": ["item_key", "collection_key"]
+}
+```
+
 ## API Mapping (v1)
 
 All endpoints are Zotero Web API v3 and use `https://api.zotero.org` with `Zotero-API-Version: 3`.
 
 - `zotero_search_items` (implemented) -> `GET /users/{userID}/items`
 - Query params: `q={query}` (quick search), `tag={tag}` (repeatable), `limit={limit}`, `sort={sort}`, `start={start}`
+- `zotero_list_collections` (implemented) -> `GET /users/{userID}/collections`
 - `zotero_get_item` (implemented) -> `GET /users/{userID}/items/{itemKey}`
 - `zotero_create_item` (implemented) -> `GET /items/new?itemType={item_type}` (template), then `POST /users/{userID}/items`
 - Body: JSON array with a single item object populated from tool inputs
@@ -350,6 +548,8 @@ All endpoints are Zotero Web API v3 and use `https://api.zotero.org` with `Zoter
 - `POST /users/{userID}/items` with `parentItem={item_key}` to create attachment item
 - `POST /users/{userID}/items/{attachmentKey}/file` (upload authorization: md5, filename, filesize, mtime)
 - `POST {uploadUrl}` (multipart upload with `prefix`/`suffix`), then `POST /users/{userID}/items/{attachmentKey}/file` to register upload
+- `zotero_attach_arxiv_pdf` (implemented) -> fetch `https://arxiv.org/pdf/{arxivId}.pdf`, then same upload flow as `zotero_upload_attachment`
+- `zotero_add_item_to_collection` (implemented) -> `POST /users/{userID}/collections/{collectionKey}/items`
 
 ## Security Model
 
@@ -420,6 +620,8 @@ Docker packaging is included (see `Dockerfile`), but no published image is provi
 docker build -t zotero-mcp:local .
 ```
 
+Note: Some sandboxed environments (including this Codex sandbox) may not have Docker daemon access and can fail with a `permission denied while trying to connect to the docker API` error. In that case, run the build directly on your host with Docker Desktop running.
+
 Then run it with `stdio` like this:
 
 ```bash
@@ -447,6 +649,10 @@ docker run --rm -i --env-file .env.zotero-mcp \
 uv sync
 uv run python -m zotero_mcp
 ```
+
+Notes on dependencies:
+- Dev/test installs need network access to download build/runtime deps (for example, the build backend `hatchling`).
+- Offline installs are possible if you precreate a lockfile and cache the wheels. Example flow: (1) on a machine with network, run `uv lock` and `uv sync` to populate the lockfile and `uv` cache, (2) copy `uv.lock` and the `uv` cache directory to the offline machine (set `UV_CACHE_DIR` to that cache path), (3) run `uv sync --frozen` on the offline machine to install from the cached wheels.
 
 To use a local `.env` file, copy the example and source it before running:
 

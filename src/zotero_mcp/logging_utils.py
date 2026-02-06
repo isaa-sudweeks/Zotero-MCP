@@ -35,6 +35,10 @@ _SENSITIVE_KEYS = {
     "prefix",
     "suffix",
     "file_path",
+    "file_url",
+    "file_bytes_base64",
+    "file_bytes",
+    "filename",
     "path",
 }
 
