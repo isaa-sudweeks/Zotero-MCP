@@ -4,7 +4,7 @@ Local MCP server that gives AI agents safe, structured access to the Zotero API 
 
 This project targets the Docker MCP Catalog submission flow and will be published as a self-provided image once a published image is available.
 
-**Status**: Core tools implemented (search, get, create, upload, collections). Reliability (retry + read cache) and structured logging are in place. Tests exist but require dependencies; Dockerfile is present and local image validation is pending.
+**Status**: Core tools implemented (search, get, create, upload, collections). Reliability (retry + read cache) and structured logging are in place. Tests exist but require dependencies; Dockerfile is present and local image validation is pending. **Known issue**: `zotero_add_item_to_collection` is flaky and needs investigation.
 
 **Vision (v1)**: An agent can search your personal Zotero library for a paper. If it’s missing, the agent can upload the paper and its metadata (including a file attachment, typically a PDF) into your library.
 
@@ -23,7 +23,7 @@ This project targets the Docker MCP Catalog submission flow and will be publishe
 - Retrieve item metadata (including attachments). (Implemented)
 - Create new items with metadata. (Implemented)
 - Upload file attachments (typically PDFs) and link them to items. (Implemented)
-- Add an item to a collection by name or key. (Implemented)
+- Add an item to a collection by name or key. (Implemented, but currently flaky)
 
 ## MCP Tools (v1)
 
@@ -124,6 +124,7 @@ Current tool surface for v1. Tools below reflect the current implementation.
 
 **Tool: `zotero_add_item_to_collection`**
 - Purpose: add an item to a collection by collection key or name.
+- Note: currently flaky; may fail intermittently and needs investigation.
 - Inputs
 - `item_key` (string, required): item key to add.
 - `collection_key` (string, optional): collection key to add to.

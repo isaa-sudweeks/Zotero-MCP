@@ -46,6 +46,11 @@ Upload attachment: `GET /items/new?itemType=attachment&linkMode=imported_file`, 
 - [ ] Add LICENSE and reference it in registry metadata.
 - [ ] Add CI workflow to run unit/integration tests when deps are available (or explicitly document no CI for v1).
 - [x] Add collection tooling: list collections and add item to collection by name or key.
+- [ ] Add library context selection (personal vs group) for create/add operations.
+- [ ] Add update-item tool with ability to set collections directly (avoid separate add call).
+- [ ] Harden attachment upload to handle `If-Match`/`If-None-Match` internally.
+- [ ] Make arXiv PDF attach accept standard IDs (e.g., `2510.18348`) and handle required headers.
+- [ ] Investigate and fix `zotero_add_item_to_collection` reliability; add tests/notes.
 - [x] Add exact-match search helpers for DOI and arXiv ID (avoid false positives).
 - [x] Add helper to fetch and attach arXiv PDF automatically.
 - [x] Add ability to retrieve valid `sort` values and/or set safe defaults when relevance fails.
