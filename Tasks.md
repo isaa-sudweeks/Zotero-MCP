@@ -56,3 +56,4 @@ Upload attachment: `GET /items/new?itemType=attachment&linkMode=imported_file`, 
 - [x] Add ability to retrieve valid `sort` values and/or set safe defaults when relevance fails.
 - [x] Add attachment by URL or upload-bytes path so file paths are not required.
 - [~] Document a shared temp dir or filesystem bridge between tool server and local workspace. (Obsoleted if attachment by URL or upload-bytes is implemented)
+- [ ] Add a new tool that allows the mcp server to get annotations as in highlights and notes using the zotero API 
